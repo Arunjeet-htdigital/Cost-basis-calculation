@@ -4,6 +4,7 @@
 # Cost Basis Calculation-Accountant's Guide
 
 # OUTPUT--Keeps track of Cost basis as a subledger with additional features like running balance per address per token. Can be easily validated onchain at periodic intervals...
+# Validates with edge cases. Keeps track of possible errors without silent failures...
 <img width="1405" height="707" alt="image" src="https://github.com/user-attachments/assets/80661d30-f544-462e-ae43-2ea94a738ca9" />
 
 

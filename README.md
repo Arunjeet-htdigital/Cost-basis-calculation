@@ -7,6 +7,8 @@
 # Validates with edge cases. Keeps track of possible errors without silent failures...
 <img width="1405" height="707" alt="image" src="https://github.com/user-attachments/assets/80661d30-f544-462e-ae43-2ea94a738ca9" />
 
+# Monthly tracker of each wallet-token for validation onchain and reporting
+<img width="1406" height="309" alt="image" src="https://github.com/user-attachments/assets/6afaf772-804f-478c-82ce-41903d45d2d4" />
 
 ## What This Tool Does
 

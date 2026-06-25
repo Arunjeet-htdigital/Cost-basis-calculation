@@ -1,159 +1,84 @@
+import os
 import csv
-import re
 import pandas as pd
-from pathlib import Path
-from openpyxl import load_workbook
-
-
-HEADER_ANCHOR = "hash"
-
-
-def normalise_columns(columns):
-    out = []
-    for c in columns:
-        c = str(c).strip().lower()
-        c = re.sub(r'[\s/()]+', '_', c)
-        c = re.sub(r'_+', '_', c).strip('_')
-        out.append(c)
-    return out
-
-
-def detect_header_and_clean(df):
-
-    header_row_idx = None
-    for i, row in df.iterrows():
-        if row.astype(str).str.contains(HEADER_ANCHOR, case=False, na=False).any():
-            header_row_idx = i
-            break
-
-    if header_row_idx is None:
-        return pd.DataFrame()
-
-    header = df.iloc[header_row_idx]
-    body = df.iloc[header_row_idx + 1:].reset_index(drop=True)
-    body.columns = normalise_columns(header)
-
-    # Drop duplicate column names (keep first) and empty names
-    seen = set()
-    keep_mask = []
-    for c in body.columns:
-        if c == '' or c in seen:
-            keep_mask.append(False)
-        else:
-            seen.add(c)
-            keep_mask.append(True)
-    body = body.loc[:, keep_mask]
-
-    # Parse timestamp from date_utc
-    if 'date_utc' in body.columns:
-        body['timestamp'] = pd.to_datetime(
-        body['date_utc'].astype(str).str.strip(),
-        errors='coerce',
-        utc=True
-    )
-
-    # Keep only these columns (after normalisation)
-    KEEP_COLUMNS = {
-        'hash_unique_id',
-        'source_name',
-        'order_type',
-        'incoming_asset_unique_symbol',
-        'incoming_volume',
-        'incoming_asset_price_gbp',
-        'outgoing_asset_unique_symbol',
-        'outgoing_volume',
-        'outgoing_asset_price_gbp',
-        'fee_asset_unique_symbol',
-        'fee_volume',
-        'fee_asset_price_gbp',
-        'fee_book_value_gbp',
-        'fee_value_gbp',
-        'internal_transfer',
-        'timestamp',
-        'labels',
-        'other_parties'}
-
-    #DO THE NECESSARY CHANGE TRANSFORMATIONS.........................
-    body = body[[c for c in body.columns if c in KEEP_COLUMNS]]
-
-   # body = body[
-    #(body['internal_transfer'] == 'NO')]
- 
-
-    #body=body[
-    #(~body['labels'].str.lower().str.contains('staking rewards', na=False))]
-
-    #body.drop_duplicates(subset=['hash_unique_id','timestamp','source_name'], inplace=True)
-
-    # Move timestamp to index 0
-    if 'timestamp' in body.columns:
-        cols = list(body.columns)
-        cols.remove('timestamp')
-        cols.insert(0, 'timestamp')
-        body = body[cols]
-
-    body.rename(columns={'other_parties': 'address'}, inplace=True)
-
-    return body
-
-
-def read_folder(folder_path):
-    folder = Path(folder_path)
-    files = sorted(folder.glob('*.xlsx'))
-    if not files:
-        raise FileNotFoundError(f"No XLSX files in {folder}")
-
-    frames = []
-    for f in files:
-        print(f"Reading {f.name}...")
-        wb = load_workbook(f, data_only=True, read_only=True)
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))
-        wb.close()
-
-
-        raw = pd.DataFrame(rows)
-
-        print(f"  {len(raw):,} rows before transformation")
-
-        df = detect_header_and_clean(raw)
-        if df.empty:
-            print(f"  skip: no header row found in {f.name}")
-            continue
-        df['source_file'] = f.name
-        frames.append(df)
-        print(f"  {len(df):,} rows after transformation")
-
-    if not frames:
-        return pd.DataFrame()
-
-    combined = pd.concat(frames, ignore_index=True)
-    print(f"\nCombined: {len(combined):,} rows from {len(frames)} file(s)")
-    return combined
-
-
-def run(folder_path):
-    df = read_folder(folder_path)
-    
-    order_priority = {
-        'deposit':    0,
-        'buy':        0,
-        'trade':      1,
-        'sell':       2,
-        'withdraw':   2,
-        'withdrawal': 2,
-    }
-
-    df = df.assign(
-        _ord=df['order_type'].astype(str).str.strip().str.lower()
-                              .map(order_priority).fillna(99999).astype(int)
-    )
-    df = df.sort_values(['timestamp', '_ord'], kind='stable')
-    df = df.drop(columns=['_ord'])
-    
-    # Print everything
-    df.to_csv(r"testing_dump.csv", index=False)
-
-    return df
 
    
+def checks(df):
+    """Find 'currency' in the df and return data from that row onwards."""
+    
+    for i, row in df.iterrows():
+        if row.astype(str).str.contains("currency", case=False, na=False).any():
+            new_header = df.iloc[i]
+            new_df = df.iloc[i + 1:].reset_index(drop=True)
+            new_df.columns = new_header
+            new_df.columns = new_df.columns.str.strip().str.lower().str.replace(r'\s+', '_', regex=True)
+
+            # --- Timestamp: split date and time ---
+            split_dt = new_df['timestamp'].astype(str).str.strip().str.split(' ', n=1, expand=True)
+            raw_date = split_dt[0]
+            new_df['time'] = split_dt[1] if split_dt.shape[1] > 1 else None
+
+            # --- Split date into components ---
+            temp = raw_date.str.split(r'[/-]', expand=True)
+            temp.columns = ['a', 'b', 'c']
+
+            # --- Resolve day/month/year positions ---
+            for val in list(temp['b']):
+                if val is not None and pd.notna(val) and int(val) > 12:
+                    temp['a'], temp['b'] = temp['b'].copy(), temp['a'].copy()
+                    break
+
+            t1 = list(temp['c'])
+            t2 = list(temp['b'])
+
+            for ind, j in enumerate(t1):
+                if j and len(j) == 2:
+                    t1[ind], t2[ind] = t2[ind], t1[ind]
+            temp['c'] = t1
+            temp['b'] = t2
+
+            # --- Concat as yyyy-mm-dd ---
+            new_df['date'] = pd.to_datetime(temp['c'] + '-' + temp['b'] + '-' + temp['a'])
+
+            # --- Drop original timestamp ---
+            new_df.drop(columns=['timestamp'], inplace=True)
+
+            # --- Price conversion ---
+            new_df['price'] = pd.to_numeric(
+                new_df['price'].astype(str).str.replace(r'[,$£€\s]', '', regex=True),
+                errors='coerce'
+            ).astype(float)
+            
+            # --- Recreate timestamp from date and time ---
+            new_df['timestamp'] = pd.to_datetime(
+                new_df['date'].astype(str) + ' ' + new_df['time'].astype(str),
+                errors='coerce'
+            )
+
+            # --- Drop date and time, keep only timestamp ---
+            new_df.drop(columns=['date', 'time'], inplace=True)
+
+            # --- Reorder: timestamp first ---
+            cols = ['timestamp'] + [c for c in new_df.columns if c != 'timestamp']
+            new_df = new_df[cols]
+
+            return new_df
+    
+    return df
+
+
+def read(FOLDER_PATH, global_df):
+    for filename in os.listdir(FOLDER_PATH):
+        if filename.endswith(".csv"):
+            filepath = os.path.join(FOLDER_PATH, filename)
+            
+            with open(filepath, mode="r", encoding="utf-8", newline="") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+            
+            df = checks(pd.DataFrame(rows))
+            df["source_file"] = filename
+            
+            global_df = pd.concat([global_df, df], ignore_index=True)
+
+    return global_df
